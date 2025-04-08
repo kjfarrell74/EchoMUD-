@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <vector>
 #include <string>
+#include <utility> // Needed for std::move
 
 // Global pointer for signal handling
 static std::atomic<ConsoleUI*> g_consoleUIInstance = nullptr;
@@ -59,24 +60,27 @@ std::expected<ConsoleUI, InitError> ConsoleUI::create() {
     int height, width;
     getmaxyx(stdscr, height, width);
 
-    ConsoleUI ui(height, width);
-    if (!ui.initializeNcurses()) {
-        return std::unexpected(InitError::NCURSES_INIT_FAILED);
+    ConsoleUI ui(height, width); // Create instance on stack
+    // Note: initializeNcurses might be redundant if all setup is here
+    if (!ui.initializeNcurses()) { 
+         // Ensure cleanup if init fails after ncurses screen active
+         if(!isendwin()) endwin();
+         return std::unexpected(InitError::NCURSES_INIT_FAILED); 
     }
 
     ui.m_resizeStatus = ui.setupWindows(height, width);
 
-    g_consoleUIInstance = &ui;
-    signal(SIGINT, handleSignal);
-    signal(SIGTERM, handleSignal);
+    // Do NOT set g_consoleUIInstance here; ui is local and about to be moved.
+    signal(SIGINT, handleSignal); signal(SIGTERM, handleSignal);
 
+    // MUST return std::move(ui) to correctly construct the expected<ConsoleUI, ...>
     return std::move(ui);
 }
 
 ConsoleUI::ConsoleUI(int termHeight, int termWidth)
     : m_termHeight(termHeight), m_termWidth(termWidth) {}
 
-// Explicit move constructor
+// Correct Move Constructor Implementation
 ConsoleUI::ConsoleUI(ConsoleUI&& other) noexcept
     : m_outputWin(std::move(other.m_outputWin)),
       m_outputBorderWin(std::move(other.m_outputBorderWin)),
@@ -97,24 +101,30 @@ ConsoleUI::ConsoleUI(ConsoleUI&& other) noexcept
       m_isRunning(other.m_isRunning.load()),
       m_resizeStatus(std::move(other.m_resizeStatus))
 {
+    // If the moved-from object was the global instance, update the global instance to point to this new object.
     ConsoleUI* expected = &other;
     if (g_consoleUIInstance.compare_exchange_strong(expected, this)) {
-      // Update successful
+      // Global pointer updated successfully.
     }
+    // Reset moved-from object's primitive members
     other.m_termHeight = 0; other.m_termWidth = 0; other.m_outputHeight = 0;
     other.m_scrollOffset = 0; other.m_cursorPos = 0; other.m_historyIndex = -1;
 }
 
-// Explicit move assignment operator
+// Correct Move Assignment Operator Implementation
 ConsoleUI& ConsoleUI::operator=(ConsoleUI&& other) noexcept {
     if (this != &other) {
+        // Move all members
         m_outputWin = std::move(other.m_outputWin);
         m_outputBorderWin = std::move(other.m_outputBorderWin);
         m_inputWin = std::move(other.m_inputWin);
         m_inputBorderWin = std::move(other.m_inputBorderWin);
-        m_termHeight = other.m_termHeight; m_termWidth = other.m_termWidth;
-        m_outputHeight = other.m_outputHeight; m_inputHeight = other.m_inputHeight;
-        m_minHeight = other.m_minHeight; m_minWidth = other.m_minWidth;
+        m_termHeight = other.m_termHeight;
+        m_termWidth = other.m_termWidth;
+        m_outputHeight = other.m_outputHeight;
+        m_inputHeight = other.m_inputHeight;
+        m_minHeight = other.m_minHeight;
+        m_minWidth = other.m_minWidth;
         m_outputBuffer = std::move(other.m_outputBuffer);
         m_scrollOffset = other.m_scrollOffset;
         m_inputBuffer = std::move(other.m_inputBuffer);
@@ -124,13 +134,15 @@ ConsoleUI& ConsoleUI::operator=(ConsoleUI&& other) noexcept {
         m_isRunning.store(other.m_isRunning.load());
         m_resizeStatus = std::move(other.m_resizeStatus);
 
-        ConsoleUI* expected = &other;
-        if (g_consoleUIInstance.compare_exchange_strong(expected, this)) {
-             // Update successful
+        // Handle global pointer update
+        ConsoleUI* expected_other = &other;
+        if (g_consoleUIInstance.compare_exchange_strong(expected_other, this)) {
+            // Other was global, now this is global.
         } else {
-             expected = this;
-             g_consoleUIInstance.compare_exchange_strong(expected, nullptr);
+            ConsoleUI* expected_this = this;
+            g_consoleUIInstance.compare_exchange_strong(expected_this, nullptr);
         }
+        // Reset moved-from object's primitive members
         other.m_termHeight = 0; /* etc. */
     }
     return *this;
@@ -138,6 +150,7 @@ ConsoleUI& ConsoleUI::operator=(ConsoleUI&& other) noexcept {
 
 ConsoleUI::~ConsoleUI() {
     ConsoleUI* expected = this;
+    // Only call cleanup if this instance is the one registered globally
     if (g_consoleUIInstance.compare_exchange_strong(expected, nullptr)) {
        cleanupNcurses();
     }
@@ -146,9 +159,7 @@ ConsoleUI::~ConsoleUI() {
 void ConsoleUI::cleanupNcurses() {
     if (isendwin()) return;
     curs_set(1);
-    // Match the mode set in create(): raw() vs cbreak()
-    noraw(); // If raw() was used
-    // nocbreak(); // If cbreak() was used
+    noraw(); // Match raw() in create()
     echo();
     keypad(stdscr, FALSE);
     nodelay(stdscr, FALSE);
@@ -156,7 +167,8 @@ void ConsoleUI::cleanupNcurses() {
 }
 
 bool ConsoleUI::initializeNcurses() {
-    return true; // Settings now done in create()
+    // Can be empty if all setup is in create()
+    return true;
 }
 
 std::expected<void, ResizeError> ConsoleUI::setupWindows(int height, int width) {
@@ -172,6 +184,7 @@ std::expected<void, ResizeError> ConsoleUI::setupWindows(int height, int width) 
     }
 
     m_outputHeight = m_termHeight - m_inputHeight;
+    // Reset windows before creating new ones
     m_outputBorderWin.reset(); m_outputWin.reset();
     m_inputBorderWin.reset(); m_inputWin.reset();
 
@@ -194,11 +207,11 @@ std::expected<void, ResizeError> ConsoleUI::setupWindows(int height, int width) 
     scrollok(m_outputWin.get(), TRUE);
     wbkgd(m_outputWin.get(), COLOR_PAIR(1));
     wbkgd(m_inputWin.get(), COLOR_PAIR(1));
-    keypad(m_inputWin.get(), TRUE);
+    keypad(m_inputWin.get(), TRUE); // Essential for input window
 
     werase(stdscr);
     wnoutrefresh(stdscr);
-    drawLayout();
+    drawLayout(); // Redraw immediately after resize
     doupdate();
     return {};
 }
@@ -220,6 +233,7 @@ void ConsoleUI::drawLayout() {
     drawInputWindow();
     if (m_outputWin) wnoutrefresh(m_outputWin.get());
     if (m_inputWin) wnoutrefresh(m_inputWin.get());
+    // doupdate() is handled in run loop
 }
 
 void ConsoleUI::drawOutputWindow() {
@@ -248,6 +262,7 @@ void ConsoleUI::drawInputWindow() {
     wattron(m_inputWin.get(), COLOR_PAIR(3));
     mvwaddnstr(m_inputWin.get(), 0, 0, m_inputBuffer.c_str(), winWidth);
     wattroff(m_inputWin.get(), COLOR_PAIR(3));
+    // Cursor position handled in run loop
 }
 
 void ConsoleUI::handleInput() {
@@ -255,6 +270,7 @@ void ConsoleUI::handleInput() {
     int ch = wgetch(inputSource);
     if (!m_resizeStatus && ch != KEY_RESIZE && ch != ERR) { beep(); return; }
     if (ch == ERR) return;
+
     switch (ch) {
         case KEY_RESIZE: handleResize(); break;
         case KEY_BACKSPACE: case 127: case 8:
@@ -264,30 +280,44 @@ void ConsoleUI::handleInput() {
             if (m_cursorPos < static_cast<int>(m_inputBuffer.length())) { m_inputBuffer.erase(m_cursorPos, 1); }
             break;
         case KEY_LEFT: if (m_cursorPos > 0) m_cursorPos--; break;
-        case KEY_RIGHT: if (m_cursorPos < static_cast<int>(m_inputBuffer.length())) m_cursorPos++; break;
+        case KEY_RIGHT: 
+            if (m_cursorPos < static_cast<int>(m_inputBuffer.length())) m_cursorPos++; 
+            break;
         case KEY_HOME: m_cursorPos = 0; break;
-        case KEY_END: m_cursorPos = m_inputBuffer.length(); break;
+        case KEY_END: m_cursorPos = m_inputBuffer.length(); break; // length() is valid end pos for cursor
         case KEY_UP:
             if (!m_commandHistory.empty()) {
-                if (m_historyIndex == -1) { m_historyIndex = static_cast<int>(m_commandHistory.size()) - 1; }
+                if (m_historyIndex == -1) { 
+                    m_historyIndex = static_cast<int>(m_commandHistory.size()) - 1; 
+                }
                 else if (m_historyIndex > 0) { m_historyIndex--; }
-                m_inputBuffer = m_commandHistory[m_historyIndex];
-                m_cursorPos = m_inputBuffer.length();
+                
+                if(m_historyIndex >= 0 && m_historyIndex < static_cast<int>(m_commandHistory.size())) {
+                   m_inputBuffer = m_commandHistory[m_historyIndex];
+                   m_cursorPos = m_inputBuffer.length();
+                }
             }
             break;
         case KEY_DOWN:
             if (m_historyIndex != -1) {
                 if (m_historyIndex < static_cast<int>(m_commandHistory.size()) - 1) {
-                    m_historyIndex++; m_inputBuffer = m_commandHistory[m_historyIndex]; m_cursorPos = m_inputBuffer.length();
+                    m_historyIndex++; 
+                    m_inputBuffer = m_commandHistory[m_historyIndex]; 
+                    m_cursorPos = m_inputBuffer.length();
                 } else { m_historyIndex = -1; m_inputBuffer.clear(); m_cursorPos = 0; }
             }
             break;
-        case KEY_ENTER: case 10: case 13:
+        case KEY_ENTER: case 10: case 13: // Use KEY_ENTER and/or ASCII values
             if (m_resizeStatus && !m_inputBuffer.empty()) {
                 addOutputMessage(std::format("> {}", m_inputBuffer));
                 processCommand(m_inputBuffer);
                 if (m_inputBuffer != "exit" && (m_commandHistory.empty() || m_commandHistory.back() != m_inputBuffer)) {
                     m_commandHistory.push_back(m_inputBuffer);
+                     // Optional: Limit history size
+                     const size_t MAX_HISTORY_SIZE = 100;
+                     if (m_commandHistory.size() > MAX_HISTORY_SIZE) {
+                        m_commandHistory.erase(m_commandHistory.begin());
+                     }
                 }
                 m_inputBuffer.clear(); m_cursorPos = 0; m_historyIndex = -1; m_scrollOffset = 0;
             } else if (!m_resizeStatus) { beep(); }
@@ -308,9 +338,10 @@ void ConsoleUI::handleInput() {
              }
             break;
         default:
-            if (m_resizeStatus && ch >= 32 && ch <= 126) {
+            // Basic printable character handling (Needs UTF-8 for full support)
+            if (m_resizeStatus && ch >= 32 && ch <= 126) { 
                  m_inputBuffer.insert(m_cursorPos, 1, static_cast<char>(ch)); m_cursorPos++;
-            } else if (m_resizeStatus && ch != ERR) { /* beep(); */ }
+            } else if (m_resizeStatus && ch != ERR) { /* Optionally beep for unhandled keys */ }
             break;
     }
 }
@@ -318,12 +349,13 @@ void ConsoleUI::handleInput() {
 void ConsoleUI::handleResize() {
     int h, w; getmaxyx(stdscr, h, w);
     bool wasTooSmall = !m_resizeStatus.has_value();
+    // Attempt to set up windows with new dimensions
     m_resizeStatus = setupWindows(h, w);
     if (wasTooSmall && m_resizeStatus.has_value()) {
         addOutputMessage("Terminal resized to usable dimensions.");
     }
-    refresh();
-    doupdate();
+    // setupWindows calls drawLayout and doupdate, but an extra refresh can help
+    refresh(); 
 }
 
 void ConsoleUI::processCommand(const std::string& command) {
@@ -335,29 +367,42 @@ void ConsoleUI::processCommand(const std::string& command) {
 
 void ConsoleUI::addOutputMessage(const std::string& message) {
     std::lock_guard<std::mutex> lock(g_outputMutex);
+    // TODO: Proper line wrapping for long messages
     m_outputBuffer.push_back(message);
     const size_t MAX_BUFFER_SIZE = 1000;
     if (m_outputBuffer.size() > MAX_BUFFER_SIZE) {
         m_outputBuffer.erase(m_outputBuffer.begin(), m_outputBuffer.begin() + (m_outputBuffer.size() - MAX_BUFFER_SIZE));
     }
+    // Scrolling is handled by drawOutputWindow based on m_scrollOffset
 }
 
 void ConsoleUI::run() {
     m_isRunning = true;
     if (m_resizeStatus) { addOutputMessage("Console UI Ready. Type 'help' or 'exit'."); }
+    
+    // Set the global pointer *here* safely, pointing to the valid object `run` is called on.
+    g_consoleUIInstance = this;
+
     while (m_isRunning.load(std::memory_order_relaxed)) {
         handleInput();
         drawLayout();
         if (m_inputWin && m_resizeStatus) {
             int wh, ww; getmaxyx(m_inputWin.get(), wh, ww);
-            int adjPos = std::min(m_cursorPos, std::max(0, ww - 1));
+            // Ensure cursor position is valid (0 to width-1)
+            int adjPos = std::min(m_cursorPos, std::max(0, ww - 1)); 
             wmove(m_inputWin.get(), 0, adjPos);
-            curs_set(1);
-            wnoutrefresh(m_inputWin.get());
-        } else if (!m_resizeStatus) { curs_set(0); }
-        doupdate();
+            curs_set(1); // Make cursor visible
+            wnoutrefresh(m_inputWin.get()); // Stage input window changes
+        } else if (!m_resizeStatus) { 
+             curs_set(0); // Hide cursor if too small
+             wnoutrefresh(stdscr); // Need to refresh stdscr if showing error msg
+        }
+        doupdate(); // Update physical screen
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
+    // Ensure global pointer is cleared if this instance was the one running
+    ConsoleUI* expected = this;
+    g_consoleUIInstance.compare_exchange_strong(expected, nullptr);
 }
 
 void ConsoleUI::stop() {

@@ -37,8 +37,8 @@ public:
 
     ConsoleUI(const ConsoleUI&) = delete;
     ConsoleUI& operator=(const ConsoleUI&) = delete;
-    ConsoleUI(ConsoleUI&&) = default;
-    ConsoleUI& operator=(ConsoleUI&&) = default;
+    ConsoleUI(ConsoleUI&& other) noexcept;
+    ConsoleUI& operator=(ConsoleUI&& other) noexcept;
     ~ConsoleUI();
 
     void run();

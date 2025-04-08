@@ -1,6 +1,7 @@
 #include "ConsoleUI.h"
 #include <iostream>
 #include <string>
+#include <utility> // Include for std::move
 // Use <print> if available (C++23), otherwise fallback
 #if __has_include(<print>)
 #include <print>
@@ -40,7 +41,10 @@ int main() {
         return 1;
     }
 
+    // Correctly move the ConsoleUI object from the std::expected
     ConsoleUI consoleUI = std::move(consoleUIResult.value());
+
+    // The run method now handles setting the global pointer
     consoleUI.run();
 
     // RAII handles cleanup via destructor
