@@ -1,0 +1,35 @@
+# Build output directory
+/build/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+install_manifest.txt
+compile_commands.json
+
+# Visual Studio/MSVC specific files
+*.VC.db
+*.VC.VC.opendb
+*.sln
+*.sln.docstates
+*.suo
+*.user
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+/ipch/
+/.vs/
+/Debug/
+/Release/
+/x64/
+/Win32/
+
+# Other common ignores
+*~
+*.swp
+.DS_Store
+
+# Files added by mistake initially
+test 
