@@ -36,13 +36,23 @@ if(NOT CURSES_LIBRARIES OR NOT CURSES_INCLUDE_DIRS)
     message(FATAL_ERROR "Curses library not found. Please install ncurses/pdcurses or check paths. Include: ${CURSES_INCLUDE_DIRS} Lib: ${CURSES_LIBRARIES}")
 endif()
 
-add_executable(console_app src/main.cpp src/ConsoleUI.cpp)
+add_executable(console_app 
+    src/main.cpp 
+    src/ConsoleUI.cpp 
+    src/GameEngine.cpp 
+    src/CommandLineEditor.cpp
+    src/SignalHandler.cpp
+)
 
 # Link ncurses library - use the variables found/set above
 target_link_libraries(console_app PRIVATE ${CURSES_LIBRARIES})
 
 # Set include directories - use the variables found/set above
-target_include_directories(console_app PRIVATE ${CURSES_INCLUDE_DIRS} ${PROJECT_SOURCE_DIR}/src)
+target_include_directories(console_app PRIVATE 
+    ${CURSES_INCLUDE_DIRS} 
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src
+)
 
 # Enable C++23 features (may vary slightly by compiler)
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
@@ -52,6 +62,16 @@ elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
 endif()
 
 # Add source group for IDEs
-source_group(TREE ${PROJECT_SOURCE_DIR}/src FILES src/main.cpp src/ConsoleUI.cpp src/ConsoleUI.h)
+source_group(TREE ${PROJECT_SOURCE_DIR} FILES 
+    src/main.cpp 
+    src/ConsoleUI.cpp 
+    src/GameEngine.cpp
+    src/CommandLineEditor.cpp
+    src/SignalHandler.cpp
+    include/ConsoleUI.h
+    include/GameWorld.h
+    include/GameEngine.h
+    include/CommandLineEditor.h
+)
 
 install(TARGETS console_app DESTINATION bin) 

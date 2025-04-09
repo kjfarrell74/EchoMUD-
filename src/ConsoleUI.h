@@ -62,6 +62,7 @@ private:
 
     void handleInput();
     void handleResize();
+    void handleGameCommand(const std::string& cmd, const std::string& args);
     void processCommand(const std::string& command);
 
     // Window management with RAII

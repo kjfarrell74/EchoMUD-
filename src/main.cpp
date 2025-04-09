@@ -1,7 +1,8 @@
-#include "ConsoleUI.h"
+#include "../include/ConsoleUI.h"
 #include <iostream>
 #include <string>
 #include <utility> // Include for std::move
+#include <memory> // Include for std::make_unique
 // Use <print> if available (C++23), otherwise fallback
 #if __has_include(<print>)
 #include <print>
@@ -28,6 +29,8 @@ std::string initErrorToString(InitError err) {
         case InitError::NCURSES_INIT_FAILED: return "Failed to initialize ncurses.";
         case InitError::COLOR_SUPPORT_MISSING: return "Terminal does not support colors.";
         case InitError::CANNOT_CHANGE_COLOR: return "Unable to initialize color support.";
+        case InitError::WINDOW_SETUP_FAILED: return "Failed to set up console windows.";
+        case InitError::TERMINAL_TOO_SMALL: return "Terminal is too small.";
         default: return "Unknown initialization error.";
     }
 }
@@ -36,16 +39,34 @@ int main() {
     auto consoleUIResult = ConsoleUI::create();
 
     if (!consoleUIResult) {
-        std::println(stderr, "Error initializing Console UI: {}", initErrorToString(consoleUIResult.error()));
+        auto error = consoleUIResult.error();
+        
+        if (error == InitError::TERMINAL_TOO_SMALL) {
+            std::println("Terminal size too small. Please resize your terminal window and try again.");
+            std::println("Minimum required size: 40 x 10");
+        } else {
+            std::println(stderr, "Error initializing Console UI: {}", initErrorToString(error));
+        }
+        
         if (!isendwin()) { endwin(); } // Ensure ncurses cleanup on init failure
         return 1;
     }
 
-    // Correctly move the ConsoleUI object from the std::expected
-    ConsoleUI consoleUI = std::move(consoleUIResult.value());
-
-    // The run method now handles setting the global pointer
-    consoleUI.run();
+    try {
+        // Use a unique_ptr to ensure proper destruction even in case of exceptions
+        auto consoleUI = std::make_unique<ConsoleUI>(std::move(consoleUIResult.value()));
+        
+        // The run method now handles setting the global pointer
+        consoleUI->run();
+        
+        // Explicitly release resources before exiting
+        consoleUI.reset();
+    }
+    catch (const std::exception& e) {
+        std::println(stderr, "Exception: {}", e.what());
+        if (!isendwin()) { endwin(); }
+        return 1;
+    }
 
     // RAII handles cleanup via destructor
     std::println("Application exited cleanly.");
