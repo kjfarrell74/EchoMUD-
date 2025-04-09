@@ -5,6 +5,12 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Enable debug build by default
+set(CMAKE_BUILD_TYPE Debug)
+
+# Add debug symbols
+set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g3 -O0")
+
 set(PDCURSES_FOUND_LOCALLY FALSE) # Initialize flag
 
 # Find ncurses (or pdcurses on Windows)

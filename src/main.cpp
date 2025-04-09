@@ -38,17 +38,9 @@ std::string initErrorToString(InitError err) {
 int main() {
     auto consoleUIResult = ConsoleUI::create();
 
-    if (!consoleUIResult) {
-        auto error = consoleUIResult.error();
-        
-        if (error == InitError::TERMINAL_TOO_SMALL) {
-            std::println("Terminal size too small. Please resize your terminal window and try again.");
-            std::println("Minimum required size: 40 x 10");
-        } else {
-            std::println(stderr, "Error initializing Console UI: {}", initErrorToString(error));
-        }
-        
-        if (!isendwin()) { endwin(); } // Ensure ncurses cleanup on init failure
+    if (!consoleUIResult.has_value()) {
+        std::println(stderr, "Error initializing Console UI");
+        if (!isendwin()) { endwin(); }
         return 1;
     }
 
@@ -69,6 +61,5 @@ int main() {
     }
 
     // RAII handles cleanup via destructor
-    std::println("Application exited cleanly.");
     return 0;
 } 

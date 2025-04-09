@@ -5,6 +5,19 @@
 #include <functional>
 #include "GameWorld.h"
 
+// Forward declaration of ConsoleUI for DEBUG_LOG
+class ConsoleUI;
+
+// Define DEBUG_LOG for GameEngine.cpp
+// This makes sure it's defined regardless of inclusion order
+#ifndef DEBUG_LOG
+    // Forward declare the logging function
+    namespace internal {
+        void logDebug(const std::string& msg);
+    }
+    #define DEBUG_LOG(msg) internal::logDebug(msg)
+#endif
+
 // Define the structure for command entries
 struct CommandEntry {
     std::string name;

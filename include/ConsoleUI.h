@@ -4,13 +4,28 @@
 #include <string>
 #include <vector>
 #include <atomic>
-#include <expected>
+#include <optional>
 #include <mutex>
 #include <functional>
 #include <unordered_map>
+#include <fstream>  // For debug logging
 #include "../pdcurses/include/curses.h"
 #include "GameEngine.h"
 #include "CommandLineEditor.h"
+
+// Enable debug mode
+#define DEBUG_MODE 1
+
+// Rename DEBUG_LOG to CONSOLE_DEBUG_LOG
+#undef DEBUG_LOG
+#define CONSOLE_DEBUG_LOG(msg) ConsoleUI::logDebug(msg)
+
+// Debug macros
+#if DEBUG_MODE
+    #define DEBUG_LOG(msg) ConsoleUI::logDebug(msg)
+#else
+    #define DEBUG_LOG(msg)
+#endif
 
 // Define error types for window resizing
 enum class ResizeError {
@@ -72,8 +87,14 @@ private:
     int m_termWidth;
     int m_outputHeight = 20;
     int m_inputHeight = 3;
-    const int m_minHeight = 10;
-    const int m_minWidth = 40;
+    const int m_minHeight = 3;
+    const int m_minWidth = 10;
+    
+    // Inner window dimensions
+    int m_outputInnerHeight = 0;
+    int m_outputInnerWidth = 0;
+    int m_inputInnerHeight = 0;
+    int m_inputInnerWidth = 0;
 
     // Game engine instance
     GameEngine m_game;
@@ -89,7 +110,7 @@ private:
     std::atomic<bool> m_isRunning{false};
     
     // Result of window setup - may contain error if the terminal is too small
-    std::expected<void, ResizeError> m_resizeStatus;
+    std::optional<bool> m_resizeStatus;
     
     // Mutex for thread-safe access to the output buffer
     std::mutex m_outputMutex;
@@ -97,6 +118,9 @@ private:
     // Signal handler callbacks
     SignalCallback m_interruptCallback;
     SignalCallback m_terminateCallback;
+
+    // Debug logging
+    static std::ofstream debugLogFile;
 
     // UI methods
     void handleInput();
@@ -108,8 +132,16 @@ private:
     void processCommand(const std::string& command);
     void cleanupNcurses();
     bool initializeNcurses();
-    std::expected<void, ResizeError> setupWindows(int height, int width);
+    std::optional<bool> setupWindows(int height, int width);
+    std::optional<bool> createWindows(int height, int width);
     
+    // Window management methods
+    void calculateWindowSizes(int termHeight, int termWidth);
+    bool createBorderWindows();
+    bool createInnerWindows();
+    void setupLineEditor();
+    void destroyWindows();
+
     // Initialize signal handlers
     void setupSignalHandlers();
     
@@ -132,7 +164,7 @@ public:
     ConsoleUI& operator=(ConsoleUI&& other) noexcept;
 
     // Factory method to create and initialize the UI
-    static std::expected<ConsoleUI, InitError> create();
+    static std::optional<ConsoleUI> create();
     
     // Main UI loop
     void run();
@@ -142,4 +174,9 @@ public:
     
     // Process a game command
     void handleGameCommand(const std::string& cmd, const std::string& args);
+
+    // Debug methods
+    static void initDebugLog();
+    static void logDebug(const std::string& message);
+    void logMemoryStats() const;
 }; 
