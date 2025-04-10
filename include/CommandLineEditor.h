@@ -1,20 +1,42 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <vector>
 #include <functional>
 #include <optional>
 #include <memory>
-#include "../pdcurses/include/curses.h"
+#include <expected>
+#include <chrono>
+#include <curses.h>
 
 // Forward declaration to avoid circular dependencies
 class ConsoleUI;
+
+// Define error types for the command line editor
+enum class CommandError {
+    InvalidInput,
+    WindowError,
+    HistoryError
+};
 
 // Result returned from processing a key in the command line editor
 struct KeyProcessResult {
     bool needsRedraw = false;
     bool commandSubmitted = false;
     std::string submittedCommand;
+};
+
+// History entry with timestamp for better management
+struct HistoryEntry {
+    std::string command;
+    std::chrono::time_point<std::chrono::system_clock> timestamp;
+
+    // Constructor with current time as default
+    explicit HistoryEntry(std::string cmd) 
+        : command(std::move(cmd)), 
+          timestamp(std::chrono::system_clock::now()) 
+    {}
 };
 
 class CommandLineEditor {
@@ -27,20 +49,20 @@ public:
     
     // Drawing-related methods
     void draw();
-    int getCursorPosition() const { return m_cursorPos; }
+    [[nodiscard]] int getCursorPosition() const noexcept { return m_cursorPos; }
     
     // Content accessors
-    const std::string& getCurrentInput() const { return m_inputBuffer; }
-    std::string takeCurrentInput();
+    [[nodiscard]] const std::string& getCurrentInput() const noexcept { return m_inputBuffer; }
+    [[nodiscard]] std::string takeCurrentInput();
     
     // History methods
-    void addToHistory(const std::string& command);
-    void clearHistory();
-    const std::vector<std::string>& getHistory() const { return m_commandHistory; }
+    std::expected<void, CommandError> addToHistory(std::string_view command);
+    void clearHistory() noexcept;
+    [[nodiscard]] const std::vector<HistoryEntry>& getHistory() const noexcept { return m_commandHistory; }
     
     // Window management
-    void setWindow(WINDOW* window);
-    void resize(int width);
+    void setWindow(WINDOW* window) noexcept;
+    void resize(int width) noexcept;
     
 private:
     // Input state
@@ -48,24 +70,25 @@ private:
     int m_cursorPos = 0;
     
     // History management
-    std::vector<std::string> m_commandHistory;
+    std::vector<HistoryEntry> m_commandHistory;
     int m_historyIndex = -1;
+    static constexpr size_t MAX_HISTORY_SIZE = 100;
     
     // Window reference (not owned)
     WINDOW* m_window = nullptr;
     int m_width = 0;
     
     // Handle specific key types
-    void handleBackspace();
-    void handleDelete();
-    void handleLeftArrow();
-    void handleRightArrow();
-    void handleUpArrow();
-    void handleDownArrow();
-    void handleHome();
-    void handleEnd();
-    void handleCharacter(int ch);
+    void handleBackspace() noexcept;
+    void handleDelete() noexcept;
+    void handleLeftArrow() noexcept;
+    void handleRightArrow() noexcept;
+    void handleUpArrow() noexcept;
+    void handleDownArrow() noexcept;
+    void handleHome() noexcept;
+    void handleEnd() noexcept;
+    void handleCharacter(int ch) noexcept;
     
     // Safety check for cursor position
-    void ensureCursorInBounds();
-}; 
+    void ensureCursorInBounds() noexcept;
+};

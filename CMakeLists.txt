@@ -8,8 +8,14 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Enable debug build by default
 set(CMAKE_BUILD_TYPE Debug)
 
-# Add debug symbols
-set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g3 -O0")
+# Add debug symbols and set runtime library for MSVC
+if(MSVC)
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /Zi /Od /MDd")
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MD")
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+else()
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g3 -O0")
+endif()
 
 set(PDCURSES_FOUND_LOCALLY FALSE) # Initialize flag
 
@@ -42,29 +48,37 @@ if(NOT CURSES_LIBRARIES OR NOT CURSES_INCLUDE_DIRS)
     message(FATAL_ERROR "Curses library not found. Please install ncurses/pdcurses or check paths. Include: ${CURSES_INCLUDE_DIRS} Lib: ${CURSES_LIBRARIES}")
 endif()
 
-add_executable(console_app 
-    src/main.cpp 
+# Define common source files
+set(COMMON_SOURCES
     src/ConsoleUI.cpp 
     src/GameEngine.cpp 
     src/CommandLineEditor.cpp
     src/SignalHandler.cpp
 )
 
-# Link ncurses library - use the variables found/set above
-target_link_libraries(console_app PRIVATE ${CURSES_LIBRARIES})
+# Main console app
+add_executable(console_app 
+    src/main.cpp 
+    ${COMMON_SOURCES}
+)
 
-# Set include directories - use the variables found/set above
+# Link libraries for main app
+target_link_libraries(console_app PRIVATE 
+    ${CURSES_LIBRARIES}
+)
+
+# Set include directories for main app
 target_include_directories(console_app PRIVATE 
     ${CURSES_INCLUDE_DIRS} 
     ${PROJECT_SOURCE_DIR}/include
     ${PROJECT_SOURCE_DIR}/src
 )
 
-# Enable C++23 features (may vary slightly by compiler)
+# Enable C++23 features for main app
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     target_compile_options(console_app PRIVATE -Wall -Wextra -pedantic)
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
-    target_compile_options(console_app PRIVATE /W4 /EHsc)
+    target_compile_options(console_app PRIVATE /W4 /EHsc /FS)
 endif()
 
 # Add source group for IDEs
@@ -80,4 +94,5 @@ source_group(TREE ${PROJECT_SOURCE_DIR} FILES
     include/CommandLineEditor.h
 )
 
-install(TARGETS console_app DESTINATION bin) 
+# Install targets
+install(TARGETS console_app DESTINATION bin)

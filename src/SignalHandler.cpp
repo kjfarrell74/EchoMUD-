@@ -1,9 +1,11 @@
-#include "../include/ConsoleUI.h"
+#include "../include/SignalHandler.h"
 #include <csignal>
 #include <unordered_map>
 #include <mutex>
 #include <functional>
 #include <iostream>
+#include <format>
+#include <expected>
 
 // Initialize static members
 std::unordered_map<int, SignalHandler::SignalCallback> SignalHandler::s_signalCallbacks;
@@ -14,46 +16,92 @@ void signalRouter(int signal) {
     SignalHandler::handleSignal(signal);
 }
 
-void SignalHandler::registerHandler(int signal, SignalCallback callback) {
-    // Lock during modification
-    std::lock_guard<std::mutex> lock(s_signalMutex);
+std::expected<void, SignalError> SignalHandler::registerHandler(int signal, SignalCallback callback) {
+    if (signal <= 0) {
+        return std::unexpected(SignalError::InvalidSignal);
+    }
     
-    // Register the callback
-    s_signalCallbacks[signal] = callback;
+    if (!callback) {
+        return std::unexpected(SignalError::CallbackError);
+    }
     
-    // Set up the signal handler to point to our router
-    std::signal(signal, signalRouter);
+    try {
+        // Lock during modification
+        std::lock_guard<std::mutex> lock(s_signalMutex);
+        
+        // Register the callback
+        s_signalCallbacks[signal] = std::move(callback);
+        
+        // Set up the signal handler to point to our router
+        if (std::signal(signal, signalRouter) == SIG_ERR) {
+            // Revert our registration on failure
+            s_signalCallbacks.erase(signal);
+            return std::unexpected(SignalError::RegisterFailed);
+        }
+        
+        return {};  // Success
+    } catch (...) {
+        return std::unexpected(SignalError::RegisterFailed);
+    }
 }
 
-void SignalHandler::unregisterHandler(int signal) {
-    // Lock during modification
-    std::lock_guard<std::mutex> lock(s_signalMutex);
+std::expected<void, SignalError> SignalHandler::unregisterHandler(int signal) {
+    if (signal <= 0) {
+        return std::unexpected(SignalError::InvalidSignal);
+    }
     
-    // Remove the callback
-    s_signalCallbacks.erase(signal);
-    
-    // Reset the signal handler to default
-    std::signal(signal, SIG_DFL);
+    try {
+        // Lock during modification
+        std::lock_guard<std::mutex> lock(s_signalMutex);
+        
+        // Check if we have this signal registered
+        if (s_signalCallbacks.find(signal) == s_signalCallbacks.end()) {
+            // Nothing to unregister
+            return {};
+        }
+        
+        // Remove the callback
+        s_signalCallbacks.erase(signal);
+        
+        // Reset the signal handler to default
+        if (std::signal(signal, SIG_DFL) == SIG_ERR) {
+            return std::unexpected(SignalError::UnregisterFailed);
+        }
+        
+        return {};  // Success
+    } catch (...) {
+        return std::unexpected(SignalError::UnregisterFailed);
+    }
 }
 
 void SignalHandler::handleSignal(int signal) {
-    // Lock during access
-    std::lock_guard<std::mutex> lock(s_signalMutex);
-    
-    // Find and call the callback if it exists
-    auto it = s_signalCallbacks.find(signal);
-    if (it != s_signalCallbacks.end()) {
-        try {
-            // Call the registered callback
-            it->second();
-        } 
-        catch (const std::exception& e) {
-            // Log exception from signal handler, but don't rethrow
-            // as that would be unsafe in a signal handler
-            std::cerr << "Exception in signal handler: " << e.what() << std::endl;
+    try {
+        // Lock during access - use try_lock to avoid deadlocks in signal handlers
+        std::unique_lock<std::mutex> lock(s_signalMutex, std::try_to_lock);
+        if (!lock.owns_lock()) {
+            // If we can't get the lock, log and return
+            std::cerr << std::format("Warning: Signal {} received but mutex is locked", signal) << std::endl;
+            return;
         }
-        catch (...) {
-            std::cerr << "Unknown exception in signal handler" << std::endl;
+        
+        // Find and call the callback if it exists
+        auto it = s_signalCallbacks.find(signal);
+        if (it != s_signalCallbacks.end() && it->second) {
+            try {
+                // Call the registered callback
+                it->second();
+            } 
+            catch (const std::exception& e) {
+                // Log exception from signal handler, but don't rethrow
+                // as that would be unsafe in a signal handler
+                std::cerr << std::format("Exception in signal handler {}: {}", signal, e.what()) << std::endl;
+            }
+            catch (...) {
+                std::cerr << std::format("Unknown exception in signal handler {}", signal) << std::endl;
+            }
         }
+    } catch (...) {
+        // Log error but continue - we're in a signal handler so we must be careful
+        std::cerr << std::format("Critical error in signal handler for signal {}", signal) << std::endl;
     }
 } 

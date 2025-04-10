@@ -9,9 +9,11 @@
 #include <functional>
 #include <unordered_map>
 #include <fstream>  // For debug logging
-#include "../pdcurses/include/curses.h"
+#include <expected>  // For std::expected
+#include <curses.h>
 #include "GameEngine.h"
 #include "CommandLineEditor.h"
+#include "SignalHandler.h"  // For SignalHandler and SignalError
 
 // Enable debug mode
 #define DEBUG_MODE 1
@@ -39,32 +41,6 @@ enum class InitError {
     CANNOT_CHANGE_COLOR,
     WINDOW_SETUP_FAILED,
     TERMINAL_TOO_SMALL
-};
-
-/**
- * Signal handler class that uses dependency injection instead of global state.
- * This class manages signal handlers and routes them to the appropriate target.
- */
-class SignalHandler {
-public:
-    // Function type for signal callbacks
-    using SignalCallback = std::function<void()>;
-
-    // Register a callback for a specific signal
-    static void registerHandler(int signal, SignalCallback callback);
-    
-    // Remove a registered callback
-    static void unregisterHandler(int signal);
-    
-    // Process a signal by calling the appropriate callback
-    static void handleSignal(int signal);
-
-private:
-    // Map of signal numbers to callbacks
-    static std::unordered_map<int, SignalCallback> s_signalCallbacks;
-    
-    // Mutex to protect the callbacks map during registration/unregistration
-    static std::mutex s_signalMutex;
 };
 
 /**
@@ -96,8 +72,8 @@ private:
     int m_inputInnerHeight = 0;
     int m_inputInnerWidth = 0;
 
-    // Game engine instance
-    GameEngine m_game;
+    // Game engine instance (now a shared_ptr)
+    GameEnginePtr m_game;
     
     // Command line editor that handles input and history
     std::unique_ptr<CommandLineEditor> m_lineEditor;
@@ -179,4 +155,4 @@ public:
     static void initDebugLog();
     static void logDebug(const std::string& message);
     void logMemoryStats() const;
-}; 
+};

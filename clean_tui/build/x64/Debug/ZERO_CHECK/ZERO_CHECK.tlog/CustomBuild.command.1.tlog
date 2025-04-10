@@ -1,0 +1,10 @@
+^C:\PROGRAMMING\TUI\CLEAN_TUI\BUILD\CMAKEFILES\7305B4BC73D4E5C7B3A9AC65EB30D523\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/PROGRAMMING/TUI/clean_tui -BC:/PROGRAMMING/TUI/clean_tui/build --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file C:/PROGRAMMING/TUI/clean_tui/build/ConsoleUI.sln
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

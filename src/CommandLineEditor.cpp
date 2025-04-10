@@ -1,6 +1,8 @@
 #include "../include/CommandLineEditor.h"
 #include <algorithm>
 #include <limits>
+#include <format>
+#include <chrono>
 
 CommandLineEditor::CommandLineEditor(int width, WINDOW* inputWindow)
     : m_window(inputWindow), m_width(width)
@@ -72,31 +74,46 @@ std::string CommandLineEditor::takeCurrentInput() {
     return temp;
 }
 
-void CommandLineEditor::addToHistory(const std::string& command) {
-    // Don't add empty commands or duplicates of the last command
-    if (command.empty() || (!m_commandHistory.empty() && m_commandHistory.back() == command)) {
-        return;
-    }
-    
-    m_commandHistory.push_back(command);
-    
-    // Limit history size to 100 entries
-    const size_t MAX_HISTORY = 100;
-    if (m_commandHistory.size() > MAX_HISTORY) {
-        m_commandHistory.erase(m_commandHistory.begin());
+std::expected<void, CommandError> CommandLineEditor::addToHistory(std::string_view command) {
+    try {
+        // Don't add empty commands or duplicates of the last command
+        if (command.empty()) {
+            return std::unexpected(CommandError::InvalidInput);
+        }
+        
+        // Check for duplicates of the last command
+        if (!m_commandHistory.empty() && m_commandHistory.back().command == command) {
+            return {}; // Success but nothing added
+        }
+        
+        // Create new history entry with current timestamp
+        m_commandHistory.emplace_back(std::string{command});
+        
+        // Limit history size to MAX_HISTORY_SIZE entries
+        if (m_commandHistory.size() > MAX_HISTORY_SIZE) {
+            m_commandHistory.erase(m_commandHistory.begin());
+        }
+        
+        return {};  // Success
+    } catch (...) {
+        return std::unexpected(CommandError::HistoryError);
     }
 }
 
-void CommandLineEditor::clearHistory() {
-    m_commandHistory.clear();
-    m_historyIndex = -1;
+void CommandLineEditor::clearHistory() noexcept {
+    try {
+        m_commandHistory.clear();
+        m_historyIndex = -1;
+    } catch (...) {
+        // If clear throws (shouldn't happen), silently maintain exception neutrality
+    }
 }
 
-void CommandLineEditor::setWindow(WINDOW* window) {
+void CommandLineEditor::setWindow(WINDOW* window) noexcept {
     m_window = window;
 }
 
-void CommandLineEditor::resize(int width) {
+void CommandLineEditor::resize(int width) noexcept {
     m_width = width;
     // Make sure cursor position is still valid
     ensureCursorInBounds();
@@ -104,78 +121,103 @@ void CommandLineEditor::resize(int width) {
 
 // Private methods for handling specific key presses
 
-void CommandLineEditor::handleBackspace() {
+void CommandLineEditor::handleBackspace() noexcept {
     if (m_cursorPos > 0) {
-        m_inputBuffer.erase(m_cursorPos - 1, 1);
-        m_cursorPos--;
+        try {
+            m_inputBuffer.erase(m_cursorPos - 1, 1);
+            m_cursorPos--;
+        } catch (...) {
+            // Maintain exception neutrality
+        }
     }
 }
 
-void CommandLineEditor::handleDelete() {
+void CommandLineEditor::handleDelete() noexcept {
     if (m_cursorPos < static_cast<int>(m_inputBuffer.length())) {
-        m_inputBuffer.erase(m_cursorPos, 1);
+        try {
+            m_inputBuffer.erase(m_cursorPos, 1);
+        } catch (...) {
+            // Maintain exception neutrality
+        }
     }
 }
 
-void CommandLineEditor::handleLeftArrow() {
+void CommandLineEditor::handleLeftArrow() noexcept {
     if (m_cursorPos > 0) {
         m_cursorPos--;
     }
 }
 
-void CommandLineEditor::handleRightArrow() {
+void CommandLineEditor::handleRightArrow() noexcept {
     if (m_cursorPos < static_cast<int>(m_inputBuffer.length())) {
         m_cursorPos++;
     }
 }
 
-void CommandLineEditor::handleHome() {
+void CommandLineEditor::handleHome() noexcept {
     m_cursorPos = 0;
 }
 
-void CommandLineEditor::handleEnd() {
+void CommandLineEditor::handleEnd() noexcept {
     m_cursorPos = static_cast<int>(std::min(m_inputBuffer.length(), 
         static_cast<size_t>(std::numeric_limits<int>::max())));
 }
 
-void CommandLineEditor::handleUpArrow() {
+void CommandLineEditor::handleUpArrow() noexcept {
     if (m_commandHistory.empty()) return;
     
-    if (m_historyIndex == -1) {
-        m_historyIndex = static_cast<int>(m_commandHistory.size()) - 1;
-    } else if (m_historyIndex > 0) {
-        m_historyIndex--;
-    }
-    
-    if (m_historyIndex >= 0 && m_historyIndex < static_cast<int>(m_commandHistory.size())) {
-        m_inputBuffer = m_commandHistory[m_historyIndex];
-        m_cursorPos = static_cast<int>(std::min(m_inputBuffer.length(), 
-            static_cast<size_t>(std::numeric_limits<int>::max())));
+    try {
+        if (m_historyIndex == -1) {
+            m_historyIndex = static_cast<int>(m_commandHistory.size()) - 1;
+        } else if (m_historyIndex > 0) {
+            m_historyIndex--;
+        }
+        
+        if (m_historyIndex >= 0 && m_historyIndex < static_cast<int>(m_commandHistory.size())) {
+            m_inputBuffer = m_commandHistory[m_historyIndex].command;
+            m_cursorPos = static_cast<int>(std::min(m_inputBuffer.length(), 
+                static_cast<size_t>(std::numeric_limits<int>::max())));
+        }
+    } catch (...) {
+        // Maintain exception neutrality
     }
 }
 
-void CommandLineEditor::handleDownArrow() {
+void CommandLineEditor::handleDownArrow() noexcept {
     if (m_historyIndex == -1) return;
     
-    if (m_historyIndex < static_cast<int>(m_commandHistory.size()) - 1) {
-        m_historyIndex++;
-        m_inputBuffer = m_commandHistory[m_historyIndex];
-        m_cursorPos = static_cast<int>(std::min(m_inputBuffer.length(), 
-            static_cast<size_t>(std::numeric_limits<int>::max())));
-    } else {
-        m_historyIndex = -1;
-        m_inputBuffer.clear();
-        m_cursorPos = 0;
+    try {
+        if (m_historyIndex < static_cast<int>(m_commandHistory.size()) - 1) {
+            m_historyIndex++;
+            m_inputBuffer = m_commandHistory[m_historyIndex].command;
+            m_cursorPos = static_cast<int>(std::min(m_inputBuffer.length(), 
+                static_cast<size_t>(std::numeric_limits<int>::max())));
+        } else {
+            m_historyIndex = -1;
+            m_inputBuffer.clear();
+            m_cursorPos = 0;
+        }
+    } catch (...) {
+        // Maintain exception neutrality
     }
 }
 
-void CommandLineEditor::handleCharacter(int ch) {
-    m_inputBuffer.insert(m_cursorPos, 1, static_cast<char>(ch));
-    m_cursorPos++;
+void CommandLineEditor::handleCharacter(int ch) noexcept {
+    try {
+        m_inputBuffer.insert(m_cursorPos, 1, static_cast<char>(ch));
+        m_cursorPos++;
+    } catch (...) {
+        // Maintain exception neutrality
+    }
 }
 
-void CommandLineEditor::ensureCursorInBounds() {
-    int maxPos = static_cast<int>(std::min(m_inputBuffer.length(), 
-        static_cast<size_t>(std::numeric_limits<int>::max())));
-    m_cursorPos = std::min(std::max(0, m_cursorPos), maxPos);
+void CommandLineEditor::ensureCursorInBounds() noexcept {
+    try {
+        int maxPos = static_cast<int>(std::min(m_inputBuffer.length(), 
+            static_cast<size_t>(std::numeric_limits<int>::max())));
+        m_cursorPos = std::min(std::max(0, m_cursorPos), maxPos);
+    } catch (...) {
+        // Maintain exception neutrality
+        m_cursorPos = 0;
+    }
 } 

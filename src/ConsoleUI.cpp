@@ -1,3 +1,4 @@
+#define _CRT_SECURE_NO_WARNINGS
 #include "../include/ConsoleUI.h"
 #include <clocale>
 #include <stdexcept>
@@ -61,7 +62,11 @@ void ConsoleUI::logDebug(const std::string& message) {
         
         // Get local time
         std::tm timeInfo;
+#ifdef _WIN32
+        localtime_s(&timeInfo, &timestamp);
+#else
         localtime_r(&timestamp, &timeInfo);
+#endif
         
         // Format timestamp
         char timeBuffer[20];
@@ -174,7 +179,7 @@ ConsoleUI::ConsoleUI(int termHeight, int termWidth, const std::string& playerNam
       m_termWidth(termWidth),
       m_outputHeight(20),                   // Default window sizes
       m_inputHeight(3),
-      m_game(playerName),                   // Initialize game engine with player name
+      m_game(GameEngine::create(playerName)), // Initialize game engine with player name using shared_ptr
       m_lineEditor(nullptr),                // Line editor will be set up later
       m_outputBuffer(),                     // Empty output buffer
       m_scrollOffset(0),                    // Start with no scroll
@@ -191,15 +196,33 @@ ConsoleUI::ConsoleUI(int termHeight, int termWidth, const std::string& playerNam
 // Set up signal handlers for clean termination
 void ConsoleUI::setupSignalHandlers() {
     // Register the callbacks with the SignalHandler
-    SignalHandler::registerHandler(SIGINT, m_interruptCallback);   // Ctrl+C
-    SignalHandler::registerHandler(SIGTERM, m_terminateCallback);  // Termination request
+    auto result1 = SignalHandler::registerHandler(SIGINT, m_interruptCallback);   // Ctrl+C
+    if (!result1) {
+        DEBUG_LOG("Failed to register SIGINT handler: " + 
+                  std::to_string(static_cast<int>(result1.error())));
+    }
+    
+    auto result2 = SignalHandler::registerHandler(SIGTERM, m_terminateCallback);  // Termination request
+    if (!result2) {
+        DEBUG_LOG("Failed to register SIGTERM handler: " + 
+                  std::to_string(static_cast<int>(result2.error())));
+    }
 }
 
 // Clean up signal handlers
 void ConsoleUI::cleanupSignalHandlers() {
     // Unregister the handlers to ensure clean shutdown
-    SignalHandler::unregisterHandler(SIGINT);
-    SignalHandler::unregisterHandler(SIGTERM);
+    auto result1 = SignalHandler::unregisterHandler(SIGINT);
+    if (!result1) {
+        DEBUG_LOG("Failed to unregister SIGINT handler: " + 
+                  std::to_string(static_cast<int>(result1.error())));
+    }
+    
+    auto result2 = SignalHandler::unregisterHandler(SIGTERM);
+    if (!result2) {
+        DEBUG_LOG("Failed to unregister SIGTERM handler: " + 
+                  std::to_string(static_cast<int>(result2.error())));
+    }
 }
 
 // Move constructor transfers ownership of all resources
@@ -212,7 +235,7 @@ ConsoleUI::ConsoleUI(ConsoleUI&& other) noexcept
       m_termWidth(other.m_termWidth),
       m_outputHeight(other.m_outputHeight),
       m_inputHeight(other.m_inputHeight),
-      m_game(std::move(other.m_game)),
+      m_game(std::move(other.m_game)), // Move the shared_ptr
       m_lineEditor(std::move(other.m_lineEditor)),
       m_outputBuffer(std::move(other.m_outputBuffer)),
       m_scrollOffset(other.m_scrollOffset),
@@ -236,6 +259,7 @@ ConsoleUI::ConsoleUI(ConsoleUI&& other) noexcept
     other.m_inputWin.reset();
     other.m_inputBorderWin.reset();
     other.m_lineEditor.reset();
+    other.m_game.reset(); // Reset the shared_ptr in the moved-from object
 
     // Update line editor's window reference if we have a valid input window
     if (m_lineEditor && m_inputWin) {
@@ -261,7 +285,7 @@ ConsoleUI& ConsoleUI::operator=(ConsoleUI&& other) noexcept {
         m_termWidth = other.m_termWidth;
         m_outputHeight = other.m_outputHeight;
         m_inputHeight = other.m_inputHeight;
-        m_game = std::move(other.m_game);
+        m_game = std::move(other.m_game); // Move the shared_ptr
         m_lineEditor = std::move(other.m_lineEditor);
         m_outputBuffer = std::move(other.m_outputBuffer);
         m_scrollOffset = other.m_scrollOffset;
@@ -286,6 +310,7 @@ ConsoleUI& ConsoleUI::operator=(ConsoleUI&& other) noexcept {
         other.m_inputWin.reset();
         other.m_inputBorderWin.reset();
         other.m_lineEditor.reset();
+        other.m_game.reset(); // Reset the shared_ptr in the moved-from object
 
         // Re-register signal handlers with this instance
         // (Crucially, this must happen *after* moving members and *after*
@@ -527,6 +552,33 @@ void ConsoleUI::drawLayout() {
     // doupdate() is handled in run loop for efficiency
 }
 
+// Helper function to wrap text to fit within a specified width
+std::vector<std::string> wrapText(const std::string& text, int width) {
+    std::vector<std::string> lines;
+    if (width <= 0) return lines;
+
+    size_t start = 0;
+    while (start < text.length()) {
+        size_t end = start + width;
+        if (end >= text.length()) {
+            lines.push_back(text.substr(start));
+            break;
+        }
+
+        // Find the last space before the width limit
+        size_t spacePos = text.find_last_of(' ', end);
+        if (spacePos != std::string::npos && spacePos > start) {
+            lines.push_back(text.substr(start, spacePos - start));
+            start = spacePos + 1; // Skip the space
+        } else {
+            // No space found, cut at width
+            lines.push_back(text.substr(start, width));
+            start += width;
+        }
+    }
+    return lines;
+}
+
 // Draw the output window content
 void ConsoleUI::drawOutputWindow() {
     // Skip if window doesn't exist
@@ -545,19 +597,36 @@ void ConsoleUI::drawOutputWindow() {
     // Lock output buffer while accessing it
     std::lock_guard<std::mutex> lock(m_outputMutex);
     
+    int currentLine = 0;
+    int screenY = 0;
+
     // Calculate which lines to display based on scroll position
     int bufferSize = static_cast<int>(m_outputBuffer.size());
-    int firstLineIdx = std::max(0, bufferSize - winHeight - m_scrollOffset);
-    int lastLineIdx = std::max(0, bufferSize - m_scrollOffset);
     
     // Set text color
     wattron(m_outputWin.get(), COLOR_PAIR(1));
     
-    // Draw each visible line
-    for (int i = firstLineIdx; i < lastLineIdx; ++i) {
-        int screenY = i - firstLineIdx;
-        if (screenY >= winHeight) break;
-        mvwaddnstr(m_outputWin.get(), screenY, 0, m_outputBuffer[i].c_str(), winWidth);
+    // Iterate through messages
+    for (int i = 0; i < bufferSize && screenY < winHeight; ++i) {
+        const std::string& message = m_outputBuffer[i];
+        std::istringstream iss(message);
+        std::string subLine;
+
+        while (std::getline(iss, subLine)) {
+            auto wrappedLines = wrapText(subLine, winWidth);
+            for (const auto& wrappedLine : wrappedLines) {
+                if (currentLine >= m_scrollOffset) {
+                    if (screenY < winHeight) {
+                        mvwaddstr(m_outputWin.get(), screenY, 0, wrappedLine.c_str());
+                        screenY++;
+                    } else {
+                        break;
+                    }
+                }
+                currentLine++;
+            }
+            if (screenY >= winHeight) break;
+        }
     }
     
     // Reset text attributes
@@ -594,6 +663,51 @@ void ConsoleUI::handleInput() {
             return;
         }
         
+        // Handle scrolling keys
+        if (ch == KEY_PPAGE) { // Page Up
+            // Increase scroll offset to see older messages
+            m_scrollOffset += 5;
+            
+            // Prevent scrolling beyond buffer size
+            int bufferSize = static_cast<int>(m_outputBuffer.size());
+            int winHeight = 0;
+            if (m_outputWin) {
+                getmaxyx(m_outputWin.get(), winHeight, std::ignore);
+            }
+            
+            // Cap scroll offset to prevent blank screens
+            if (m_scrollOffset > bufferSize - winHeight) {
+                m_scrollOffset = bufferSize - winHeight;
+            }
+            
+            // Ensure it's not negative
+            if (m_scrollOffset < 0) {
+                m_scrollOffset = 0;
+            }
+            
+            // Redraw with new scroll position
+            drawOutputWindow();
+            wnoutrefresh(m_outputWin.get());
+            doupdate();
+            return;
+        }
+        
+        if (ch == KEY_NPAGE) { // Page Down
+            // Decrease scroll offset to see newer messages
+            m_scrollOffset -= 5;
+            
+            // Prevent negative scroll
+            if (m_scrollOffset < 0) {
+                m_scrollOffset = 0;
+            }
+            
+            // Redraw with new scroll position
+            drawOutputWindow();
+            wnoutrefresh(m_outputWin.get());
+            doupdate();
+            return;
+        }
+        
         // Process input with the line editor
         if (m_lineEditor) {
             try {
@@ -604,6 +718,9 @@ void ConsoleUI::handleInput() {
                 if (result.commandSubmitted) {
                     // Echo command to output
                     addOutputMessage("> " + result.submittedCommand);
+                    
+                    // Reset scroll offset to show latest messages when a command is submitted
+                    m_scrollOffset = 0;
                     
                     // Process the command
                     try {
@@ -663,7 +780,7 @@ void ConsoleUI::handleGameCommand(const std::string& cmd, const std::string& arg
         DEBUG_LOG("handleGameCommand: cmd='" + cmd + "', args='" + args + "'");
         
         // Check if command should quit the application
-        if (m_game.shouldQuit(cmd, args)) {
+        if (m_game->shouldQuit(cmd, args)) {
             DEBUG_LOG("Command triggers application exit");
             addOutputMessage("Exiting game...");
             stop();  // End the run loop
@@ -673,9 +790,21 @@ void ConsoleUI::handleGameCommand(const std::string& cmd, const std::string& arg
         // Get response from game engine and display it
         DEBUG_LOG("Calling game engine handler");
         try {
-            std::string response = m_game.handleCommand(cmd, args);
-            DEBUG_LOG("Game engine response: '" + response + "'");
-            addOutputMessage(response);
+            CommandResult result = m_game->handleCommand(cmd, args);
+            DEBUG_LOG("Game engine response: '" + result.message + "'");
+            
+            // Add the response to the output buffer
+            addOutputMessage(result.message);
+            
+            // If this is the help command with no arguments, add info about scrolling
+            if (cmd == "help" && args.empty()) {
+                addOutputMessage("(Use PageUp/PageDown keys to scroll through output)");
+            }
+            
+            // If there was an error, log it
+            if (result.status == CommandResult::Status::Error) {
+                DEBUG_LOG("ERROR: " + result.message);
+            }
         } catch (const std::bad_alloc& e) {
             // Handle memory allocation errors specifically
             std::string errorMsg = "Memory error in game engine (bad_alloc): " + std::string(e.what());
@@ -763,7 +892,8 @@ void ConsoleUI::processCommand(const std::string& command) {
                 
                 try {
                     cmd = trimmedCommand.substr(0, spacePos);
-                    std::transform(cmd.begin(), cmd.end(), cmd.begin(), ::tolower); // Convert to lowercase
+                    std::transform(cmd.begin(), cmd.end(), cmd.begin(), 
+                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
                 } catch (const std::exception& e) {
                     DEBUG_LOG("Error extracting command: " + std::string(e.what()));
                     return;
@@ -786,7 +916,8 @@ void ConsoleUI::processCommand(const std::string& command) {
             } else {
                 // Command with no arguments
                 std::string cmd = trimmedCommand;
-                std::transform(cmd.begin(), cmd.end(), cmd.begin(), ::tolower);
+                std::transform(cmd.begin(), cmd.end(), cmd.begin(), 
+                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
                 DEBUG_LOG("Executing command: '" + cmd + "' with no args");
                 handleGameCommand(cmd, "");
             }
@@ -820,7 +951,7 @@ void ConsoleUI::addOutputMessage(const std::string& message) {
              m_outputBuffer.push_back(message);
         } catch (const std::bad_alloc& e) {
             // Emergency cleanup on allocation failure during push_back
-            DEBUG_LOG("ERROR: bad_alloc adding message. Clearing buffer.");
+            DEBUG_LOG("ERROR: bad_alloc adding message: " + std::string(e.what()));
             m_outputBuffer.clear();
             m_outputBuffer.shrink_to_fit(); // Try to release memory
              try {

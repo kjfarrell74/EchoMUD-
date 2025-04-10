@@ -1,8 +1,11 @@
+#define _CRT_SECURE_NO_WARNINGS
 #include "../include/GameEngine.h"
 #include <algorithm>
 #include <sstream>  // For stringstream
 #include <iostream> // For debugging
 #include <fstream>  // For file logging
+#include <format>   // For std::format
+#include <stdexcept>
 
 // Implementation of internal logging function
 namespace internal {
@@ -26,29 +29,54 @@ static void safeStringAppend(std::string& dest, const char* src) {
     }
 }
 
-GameEngine::GameEngine(const std::string& playerName)
-    : m_player(playerName)
+GameEngine::GameEngine(std::string playerName)
+    : m_player(std::move(playerName))
 {
+    // Don't call registerCommands() here as it uses shared_from_this()
+    // It will be called from initialize() after the shared_ptr is fully constructed
+}
+
+// Initialize the game engine after construction
+void GameEngine::initialize() {
     // Register all available commands
     registerCommands();
 }
 
+// Move constructor implementation
+GameEngine::GameEngine(GameEngine&& other) noexcept
+    : m_player(std::move(other.m_player)),
+      m_hookSystem(std::move(other.m_hookSystem)),
+      m_commands() // Initialize empty map
+{
+    // Command registration will be handled by initialize()
+}
+
+// Move assignment operator implementation
+GameEngine& GameEngine::operator=(GameEngine&& other) noexcept {
+    if (this != &other) {
+        m_player = std::move(other.m_player);
+        m_hookSystem = std::move(other.m_hookSystem);
+        // Clear existing commands
+        m_commands.clear();
+        // Command registration will be handled by initialize()
+    }
+    return *this;
+}
+
 void GameEngine::registerCommands() {
-    // Register the 'say' command
+    // Get a shared pointer to this instance for safe capturing
+    auto self = shared_from_this();
+
+    // Register the 'say' command directly
     m_commands["say"] = {
         .name = "say",
         .help = "say <message>",
         .description = "Speak aloud in the room for others to hear.",
-        .handler = [this](const std::string& args) -> std::string {
+        .handler = [](GameEnginePtr engine, std::string_view args) -> CommandResult {
             try {
-                std::string response;
-                response.reserve(args.length() + 10); // Pre-allocate enough memory
-                safeStringAppend(response, "You say: '");
-                response.append(args);
-                safeStringAppend(response, "'");
-                return response;
+                return CommandResult::success(std::format("You say: '{}'", args));
             } catch (const std::exception& e) {
-                return std::string("Error processing say command: ") + e.what();
+                return CommandResult::error(std::format("Error processing say command: {}", e.what()));
             }
         }
     };
@@ -58,39 +86,31 @@ void GameEngine::registerCommands() {
         .name = "look",
         .help = "look",
         .description = "Look around and examine your surroundings.",
-        .handler = [this](const std::string& /*args*/) -> std::string {
+        .handler = [](GameEnginePtr engine, std::string_view /*args*/) -> CommandResult {
             try {
-                // Create a fixed-size response buffer to avoid allocations
-                char response[512] = {0};
-                
                 // Get current room name
-                const char* roomName = (m_player.currentRoom[0] != '\0') ? 
-                    m_player.currentRoom : "an unknown location";
+                const std::string& roomName = engine->m_player.currentRoom.empty() ? 
+                    "an unknown location" : engine->m_player.currentRoom;
                 
-                // Create a static description based on room name
-                strncpy(response, "You are in: ", sizeof(response) - 1);
-                strncat(response, roomName, sizeof(response) - strlen(response) - 1);
-                strncat(response, "\n\n", sizeof(response) - strlen(response) - 1);
+                // Build response using string formatting
+                std::string response = std::format("You are in: {}\n\n", roomName);
                 
-                // Add room-specific static description
-                if (strcmp(m_player.currentRoom, "Start Room") == 0) {
-                    strncat(response, "This is the starting area, a simple room with stone walls and a wooden floor. "
-                                    "There's a door leading north and a small window on the east wall.", 
-                                    sizeof(response) - strlen(response) - 1);
+                // Add room-specific description
+                if (engine->m_player.currentRoom == "Start Room") {
+                    response += "This is the starting area, a simple room with stone walls and a wooden floor. "
+                               "There's a door leading north and a small window on the east wall.";
                 }
-                else if (strcmp(m_player.currentRoom, "North Room") == 0) {
-                    strncat(response, "This is a larger chamber with a high ceiling. Dusty tapestries hang on the walls, "
-                                    "and there's an old desk in the corner. The exit to the south leads back to the starting room.", 
-                                    sizeof(response) - strlen(response) - 1);
+                else if (engine->m_player.currentRoom == "North Room") {
+                    response += "This is a larger chamber with a high ceiling. Dusty tapestries hang on the walls, "
+                               "and there's an old desk in the corner. The exit to the south leads back to the starting room.";
                 }
                 else {
-                    strncat(response, "This area has not been fully explored yet. There are exits in various directions.", 
-                                    sizeof(response) - strlen(response) - 1);
+                    response += "This area has not been fully explored yet. There are exits in various directions.";
                 }
                 
-                return std::string(response);
+                return CommandResult::success(response);
             } catch (...) {
-                return "Critical error processing look command.";
+                return CommandResult::error("Critical error processing look command.");
             }
         }
     };
@@ -100,18 +120,11 @@ void GameEngine::registerCommands() {
         .name = "get",
         .help = "get <item>",
         .description = "Pick up an item from the current room.",
-        .handler = [this](const std::string& args) -> std::string {
+        .handler = [](GameEnginePtr engine, std::string_view args) -> CommandResult {
             try {
-                char response[256] = {0};
-                strncpy(response, "You pick up the '", sizeof(response) - 1);
-                size_t len = strlen(response);
-                strncat(response, args.c_str(), sizeof(response) - len - 1);
-                len = strlen(response);
-                strncat(response, "'.", sizeof(response) - len - 1);
-                
-                return std::string(response);
+                return CommandResult::success(std::format("You pick up the '{}'.", args));
             } catch (...) {
-                return "Error processing get command.";
+                return CommandResult::error("Error processing get command.");
             }
         }
     };
@@ -121,31 +134,23 @@ void GameEngine::registerCommands() {
         .name = "north",
         .help = "north",
         .description = "Move to the north if possible.",
-        .handler = [this](const std::string& /*args*/) -> std::string {
+        .handler = [](GameEnginePtr engine, std::string_view /*args*/) -> CommandResult {
             try {
-                if (m_hookSystem.beforeMove(m_player.name, "north")) {
-                    return "You feel a mysterious force preventing you from moving north.";
+                if (engine->m_hookSystem.beforeMove(engine->m_player.name, "north")) {
+                    return CommandResult::success("You feel a mysterious force preventing you from moving north.");
                 } else {
                     // Check if movement is valid from current room
-                    if (strcmp(m_player.currentRoom, "Start Room") == 0) {
-                        // Copy "North Room" to player's current room
-                        memset(m_player.currentRoom, 0, Player::MAX_ROOM_LENGTH);
-                        strncpy(m_player.currentRoom, "North Room", Player::MAX_ROOM_LENGTH - 1);
+                    if (engine->m_player.currentRoom == "Start Room") {
+                        // Update player's current room
+                        engine->m_player.currentRoom = "North Room";
                         
-                        char response[256] = {0};
-                        strncpy(response, "You move north into ", sizeof(response) - 1);
-                        size_t len = strlen(response);
-                        strncat(response, m_player.currentRoom, sizeof(response) - len - 1);
-                        len = strlen(response);
-                        strncat(response, ".", sizeof(response) - len - 1);
-                        
-                        return std::string(response);
+                        return CommandResult::success(std::format("You move north into {}.", engine->m_player.currentRoom));
                     } else {
-                        return "You can't go that way.";
+                        return CommandResult::success("You can't go that way.");
                     }
                 }
             } catch (...) {
-                return "Error processing north command.";
+                return CommandResult::error("Error processing north command.");
             }
         }
     };
@@ -155,31 +160,23 @@ void GameEngine::registerCommands() {
         .name = "south",
         .help = "south",
         .description = "Move to the south if possible.",
-        .handler = [this](const std::string& /*args*/) -> std::string {
+        .handler = [](GameEnginePtr engine, std::string_view /*args*/) -> CommandResult {
             try {
-                if (m_hookSystem.beforeMove(m_player.name, "south")) {
-                    return "You feel a mysterious force preventing you from moving south.";
+                if (engine->m_hookSystem.beforeMove(engine->m_player.name, "south")) {
+                    return CommandResult::success("You feel a mysterious force preventing you from moving south.");
                 } else {
                     // Check if movement is valid from current room
-                    if (strcmp(m_player.currentRoom, "North Room") == 0) {
-                        // Copy "Start Room" to player's current room
-                        memset(m_player.currentRoom, 0, Player::MAX_ROOM_LENGTH);
-                        strncpy(m_player.currentRoom, "Start Room", Player::MAX_ROOM_LENGTH - 1);
+                    if (engine->m_player.currentRoom == "North Room") {
+                        // Update player's current room
+                        engine->m_player.currentRoom = "Start Room";
                         
-                        char response[256] = {0};
-                        strncpy(response, "You move south into ", sizeof(response) - 1);
-                        size_t len = strlen(response);
-                        strncat(response, m_player.currentRoom, sizeof(response) - len - 1);
-                        len = strlen(response);
-                        strncat(response, ".", sizeof(response) - len - 1);
-                        
-                        return std::string(response);
+                        return CommandResult::success(std::format("You move south into {}.", engine->m_player.currentRoom));
                     } else {
-                        return "You can't go that way.";
+                        return CommandResult::success("You can't go that way.");
                     }
                 }
             } catch (...) {
-                return "Error processing south command.";
+                return CommandResult::error("Error processing south command.");
             }
         }
     };
@@ -189,16 +186,16 @@ void GameEngine::registerCommands() {
         .name = "east",
         .help = "east",
         .description = "Move to the east if possible.",
-        .handler = [this](const std::string& /*args*/) -> std::string {
+        .handler = [](GameEnginePtr engine, std::string_view /*args*/) -> CommandResult {
             try {
-                if (m_hookSystem.beforeMove(m_player.name, "east")) {
-                    return "You feel a mysterious force preventing you from moving east.";
+                if (engine->m_hookSystem.beforeMove(engine->m_player.name, "east")) {
+                    return CommandResult::success("You feel a mysterious force preventing you from moving east.");
                 } else {
                     // No valid east paths in our simple demo
-                    return "You can't go that way.";
+                    return CommandResult::success("You can't go that way.");
                 }
             } catch (...) {
-                return "Error processing east command.";
+                return CommandResult::error("Error processing east command.");
             }
         }
     };
@@ -208,16 +205,16 @@ void GameEngine::registerCommands() {
         .name = "west",
         .help = "west",
         .description = "Move to the west if possible.",
-        .handler = [this](const std::string& /*args*/) -> std::string {
+        .handler = [](GameEnginePtr engine, std::string_view /*args*/) -> CommandResult {
             try {
-                if (m_hookSystem.beforeMove(m_player.name, "west")) {
-                    return "You feel a mysterious force preventing you from moving west.";
+                if (engine->m_hookSystem.beforeMove(engine->m_player.name, "west")) {
+                    return CommandResult::success("You feel a mysterious force preventing you from moving west.");
                 } else {
                     // No valid west paths in our simple demo
-                    return "You can't go that way.";
+                    return CommandResult::success("You can't go that way.");
                 }
             } catch (...) {
-                return "Error processing west command.";
+                return CommandResult::error("Error processing west command.");
             }
         }
     };
@@ -227,8 +224,8 @@ void GameEngine::registerCommands() {
         .name = "exit",
         .help = "exit",
         .description = "Exit the game.",
-        .handler = [this](const std::string& /*args*/) -> std::string {
-            return "Exiting game...";
+        .handler = [](GameEnginePtr /*engine*/, std::string_view /*args*/) -> CommandResult {
+            return CommandResult::success("Exiting game...");
         }
     };
     
@@ -237,8 +234,8 @@ void GameEngine::registerCommands() {
         .name = "quit",
         .help = "quit",
         .description = "Exit the game.",
-        .handler = [this](const std::string& /*args*/) -> std::string {
-            return "Exiting game...";
+        .handler = [](GameEnginePtr /*engine*/, std::string_view /*args*/) -> CommandResult {
+            return CommandResult::success("Exiting game...");
         }
     };
     
@@ -247,165 +244,85 @@ void GameEngine::registerCommands() {
         .name = "help",
         .help = "help [command]",
         .description = "Display help for all commands or a specific command.",
-        .handler = [this](const std::string& args) -> std::string {
-            return handleHelpCommand(args);
+        .handler = [](GameEnginePtr engine, std::string_view args) -> CommandResult {
+            return engine->handleHelpCommand(args);
         }
     };
 }
 
-std::string GameEngine::handleHelpCommand(const std::string& args) {
+CommandResult GameEngine::handleHelpCommand(std::string_view args) {
     try {
-        // Use a large fixed buffer for the help text
-        static char helpBuffer[2048] = {0};
-        
-        // Clear the buffer
-        memset(helpBuffer, 0, sizeof(helpBuffer));
+        // Use std::string instead of fixed buffer
+        std::string helpText;
         
         if (args.empty()) {
             // List all commands with their help strings
-            strncpy(helpBuffer, "Available commands:\n", sizeof(helpBuffer) - 1);
+            helpText = "Available commands:\n";
             
             // Add each command
             for (const auto& [cmdName, entry] : m_commands) {
-                // Skip certain commands if needed
-                // if (cmdName == "someinternalcommand") continue;
-                
-                // Add command name
-                strncat(helpBuffer, "  ", sizeof(helpBuffer) - strlen(helpBuffer) - 1);
-                strncat(helpBuffer, cmdName.c_str(), sizeof(helpBuffer) - strlen(helpBuffer) - 1);
-                
-                // Add separator
-                strncat(helpBuffer, " - ", sizeof(helpBuffer) - strlen(helpBuffer) - 1);
-                
-                // Add description (truncate if too long)
-                size_t remainingSpace = sizeof(helpBuffer) - strlen(helpBuffer) - 5;
-                if (entry.description.length() < remainingSpace) {
-                    strncat(helpBuffer, entry.description.c_str(), remainingSpace);
-                } else {
-                    strncat(helpBuffer, entry.description.c_str(), remainingSpace - 4);
-                    strncat(helpBuffer, "...", sizeof(helpBuffer) - strlen(helpBuffer) - 1);
-                }
-                
-                // Add newline
-                strncat(helpBuffer, "\n", sizeof(helpBuffer) - strlen(helpBuffer) - 1);
+                helpText += std::format("  {} - {}\n", cmdName, entry.description);
             }
             
-            return std::string(helpBuffer);
+            return CommandResult::success(helpText);
         } else {
+            // Convert string_view to string for map lookup
+            std::string argStr{args};
+            
             // Show detailed help for a specific command
-            auto cmdIt = m_commands.find(args);
+            auto cmdIt = m_commands.find(argStr);
             if (cmdIt != m_commands.end()) {
                 const auto& entry = cmdIt->second;
                 
-                // Clear buffer for safety
-                memset(helpBuffer, 0, sizeof(helpBuffer));
+                // Build help text using string formatting
+                std::string detailedHelp = std::format(
+                    "{} - {}\nUsage: {}\n{}", 
+                    entry.name, entry.help, entry.help, entry.description
+                );
                 
-                // Format with simple concatenation to avoid memory issues
-                char smallBuffer[32] = {0};
-                
-                // Add command name
-                strncpy(helpBuffer, entry.name.c_str(), sizeof(helpBuffer) - 1);
-                helpBuffer[sizeof(helpBuffer) - 1] = '\0';
-                
-                // Add separator
-                strncat(helpBuffer, " - ", sizeof(helpBuffer) - strlen(helpBuffer) - 1);
-                
-                // Add help text (truncate if too long)
-                if (entry.help.length() < sizeof(smallBuffer) - 1) {
-                    strncat(helpBuffer, entry.help.c_str(), sizeof(helpBuffer) - strlen(helpBuffer) - 1);
-                } else {
-                    strncat(helpBuffer, entry.help.c_str(), sizeof(smallBuffer) - 4);
-                    strncat(helpBuffer, "...", sizeof(helpBuffer) - strlen(helpBuffer) - 1);
-                }
-                
-                // Add usage line
-                strncat(helpBuffer, "\nUsage: ", sizeof(helpBuffer) - strlen(helpBuffer) - 1);
-                
-                // Add help text again (truncate if too long)
-                if (entry.help.length() < sizeof(smallBuffer) - 1) {
-                    strncat(helpBuffer, entry.help.c_str(), sizeof(helpBuffer) - strlen(helpBuffer) - 1);
-                } else {
-                    strncat(helpBuffer, entry.help.c_str(), sizeof(smallBuffer) - 4);
-                    strncat(helpBuffer, "...", sizeof(helpBuffer) - strlen(helpBuffer) - 1);
-                }
-                
-                // Add newline
-                strncat(helpBuffer, "\n", sizeof(helpBuffer) - strlen(helpBuffer) - 1);
-                
-                // Add description (truncate if too long)
-                if (entry.description.length() < sizeof(helpBuffer) - strlen(helpBuffer) - 1) {
-                    strncat(helpBuffer, entry.description.c_str(), sizeof(helpBuffer) - strlen(helpBuffer) - 1);
-                } else {
-                    strncat(helpBuffer, entry.description.c_str(), sizeof(helpBuffer) - strlen(helpBuffer) - 20);
-                    strncat(helpBuffer, "...", sizeof(helpBuffer) - strlen(helpBuffer) - 1);
-                }
-                
-                return std::string(helpBuffer);
+                return CommandResult::success(detailedHelp);
             } else {
-                char errorBuffer[256] = {0};
-                strncpy(errorBuffer, "Unknown command: '", sizeof(errorBuffer) - 1);
-                
-                size_t position = strlen(errorBuffer);
-                strncat(errorBuffer, args.c_str(), sizeof(errorBuffer) - position - 1);
-                
-                position = strlen(errorBuffer);
-                strncat(errorBuffer, "'. Type 'help' for a list of commands.", sizeof(errorBuffer) - position - 1);
-                
-                std::string errorMsg(errorBuffer);
-                return errorMsg;
+                return CommandResult::error(std::format("Unknown command: '{}'. Type 'help' for a list of commands.", args));
             }
         }
     } catch (...) {
-        return "Error processing help command";
+        return CommandResult::error("Error processing help command");
     }
 }
 
-std::string GameEngine::handleCommand(const std::string& cmd, const std::string& args) {
+CommandResult GameEngine::handleCommand(std::string_view cmd, std::string_view args) {
     try {
+        // Convert string_view to string for map lookup
+        std::string cmdStr{cmd};
+        
         // Look up the command in the registry
-        auto cmdIt = m_commands.find(cmd);
+        auto cmdIt = m_commands.find(cmdStr);
         
         if (cmdIt != m_commands.end()) {
             // Execute the command handler with try/catch for safety
             try {
-                std::string result = cmdIt->second.handler(args);
-                return result;
+                return cmdIt->second.handler(shared_from_this(), args);
             } catch (...) {
-                // Use a fixed buffer for the error message
-                char errorBuffer[256] = {0};
-                strncpy(errorBuffer, "Error executing command '", sizeof(errorBuffer) - 1);
-                
-                size_t position = strlen(errorBuffer);
-                strncat(errorBuffer, cmd.c_str(), sizeof(errorBuffer) - position - 1);
-                
-                position = strlen(errorBuffer);
-                strncat(errorBuffer, "'", sizeof(errorBuffer) - position - 1);
-                
-                return std::string(errorBuffer);
+                return CommandResult::error(std::format("Error executing command '{}'", cmd));
             }
         } else {
-            char errorBuffer[256] = {0};
-            strncpy(errorBuffer, "Unknown command: '", sizeof(errorBuffer) - 1);
-            
-            size_t position = strlen(errorBuffer);
-            strncat(errorBuffer, cmd.c_str(), sizeof(errorBuffer) - position - 1);
-            
-            position = strlen(errorBuffer);
-            strncat(errorBuffer, "'. Type 'help' for a list of commands.", sizeof(errorBuffer) - position - 1);
-            
-            return std::string(errorBuffer);
+            return CommandResult::error(std::format("Unknown command: '{}'. Type 'help' for a list of commands.", cmd));
         }
     } catch (...) {
-        return "Error processing command";
+        return CommandResult::error("Error processing command");
     }
 }
 
-bool GameEngine::shouldQuit(const std::string& cmd, const std::string& args) {
+bool GameEngine::shouldQuit(std::string_view cmd, std::string_view args) {
     // Check for exit/quit commands directly
     if (cmd == "exit" || cmd == "quit") {
         return true;
     }
     
+    // Convert string_view to string for hook system
+    std::string cmdStr{cmd};
+    std::string argsStr{args};
+    
     // Also check the hook system for any other quit conditions
-    return m_hookSystem.beforeCommand(cmd, args);
-} 
+    return m_hookSystem.beforeCommand(cmdStr, argsStr);
+}
